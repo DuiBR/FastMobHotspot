@@ -1,6 +1,8 @@
 #!/data/data/com.termux/files/usr/bin/bash
 set -u
 
+INSTALLER_VERSION="2.1.0-proxy"
+
 ROOT_DIR="/data/adb/fastmob-firewall"
 ENGINE="$ROOT_DIR/fastmob-firewall.sh"
 CONFIG="$ROOT_DIR/config.conf"
@@ -23,6 +25,8 @@ cat > "$TMP_ENGINE" <<'ENGINE_SCRIPT'
 
 PATH=/system/bin:/system/xbin:/vendor/bin:/product/bin:/data/adb/magisk:$PATH
 
+ENGINE_VERSION="2.1.0-proxy"
+
 ROOT_DIR="/data/adb/fastmob-firewall"
 CONFIG="$ROOT_DIR/config.conf"
 STATE="$ROOT_DIR/state.conf"
@@ -33,6 +37,11 @@ CHAIN6="FASTMOB6_ONLY"
 # vps1/vps3/vps4.fastmob.app.br -> 144.22.139.151
 # vps2.fastmob.app.br           -> 163.176.118.248
 DEFAULT_SERVER_IPS="144.22.139.151 163.176.118.248"
+
+# Proxies utilizados pelo aplicativo antes/durante a abertura do túnel.
+# Estes destinos são liberados SOMENTE em TCP/80.
+DEFAULT_PROXY_IPS="104.26.5.32 104.17.70.206 104.17.72.206"
+DEFAULT_PROXY_TCP_PORT="80"
 
 # DNS é liberado apenas para permitir que o aplicativo resolva os domínios
 # dos servidores antes de o túnel VPN ser estabelecido.
@@ -50,6 +59,8 @@ require_root() {
 load_config() {
     HOTSPOT_IF=""
     SERVER_IPS="$DEFAULT_SERVER_IPS"
+    PROXY_IPS="$DEFAULT_PROXY_IPS"
+    PROXY_TCP_PORT="$DEFAULT_PROXY_TCP_PORT"
     ALLOW_DNS="$DEFAULT_ALLOW_DNS"
 
     if [ -f "$CONFIG" ]; then
@@ -63,6 +74,8 @@ save_config() {
     {
         printf 'HOTSPOT_IF=%s\n' "$HOTSPOT_IF"
         printf 'SERVER_IPS="%s"\n' "$SERVER_IPS"
+        printf 'PROXY_IPS="%s"\n' "$PROXY_IPS"
+        printf 'PROXY_TCP_PORT=%s\n' "$PROXY_TCP_PORT"
         printf 'ALLOW_DNS=%s\n' "$ALLOW_DNS"
     } > "$TMP" || return 1
     chmod 600 "$TMP" 2>/dev/null
@@ -164,9 +177,17 @@ firewall_on() {
         iptables -w -A "$CHAIN4" -p tcp --dport 53 -j ACCEPT
     fi
 
-    # Permite somente os IPs dos servidores FASTMOB.
+    # Permite os servidores VPN FASTMOB em suas portas configuradas.
+    # Mantido sem filtro de porta para preservar compatibilidade com os
+    # protocolos/portas já usados nesses servidores.
     for IP in $SERVER_IPS; do
         iptables -w -A "$CHAIN4" -d "$IP" -j ACCEPT
+    done
+
+    # Permite os proxies exclusivamente na porta TCP definida.
+    # Isso evita liberar outras portas desses endereços compartilhados.
+    for IP in $PROXY_IPS; do
+        iptables -w -A "$CHAIN4" -p tcp -d "$IP" --dport "$PROXY_TCP_PORT" -j ACCEPT
     done
 
     # Bloqueia todo o restante do tráfego IPv4 encaminhado pelo hotspot.
@@ -191,11 +212,13 @@ firewall_on() {
     say "======================================"
     say " FIREWALL FASTMOB ATIVADO"
     say "======================================"
+    say "Versão: $ENGINE_VERSION"
     say "Hotspot: $HOTSPOT_IF"
     UPSTREAM="$(detect_upstream_interface)"
     [ -n "$UPSTREAM" ] && say "Internet móvel: $UPSTREAM"
     say "DNS de bootstrap: $([ "$ALLOW_DNS" = "1" ] && echo LIBERADO || echo BLOQUEADO)"
-    say "Servidores permitidos: $SERVER_IPS"
+    say "Servidores VPN permitidos: $SERVER_IPS"
+    say "Proxies permitidos: $PROXY_IPS (TCP/$PROXY_TCP_PORT)"
     say "IPv6: BLOQUEADO"
     say ""
     say "Sem a VPN, os clientes não terão navegação normal."
@@ -211,6 +234,7 @@ firewall_off() {
     say "======================================"
     say " FIREWALL FASTMOB DESATIVADO"
     say "======================================"
+    say "Versão: $ENGINE_VERSION"
     say "O hotspot voltou a compartilhar a Internet normalmente."
 }
 
@@ -226,11 +250,13 @@ firewall_status() {
     say "======================================"
     say " STATUS DO FIREWALL FASTMOB"
     say "======================================"
+    say "Versão: $ENGINE_VERSION"
     say "Interface configurada: ${HOTSPOT_IF:-não detectada}"
     CURRENT="$(detect_hotspot_interface 2>/dev/null)"
     say "Interface atual: ${CURRENT:-hotspot desligado/não detectado}"
     say "Offload desativado: $(settings get global tether_offload_disabled 2>/dev/null)"
-    say "Servidores permitidos: $SERVER_IPS"
+    say "Servidores VPN permitidos: $SERVER_IPS"
+    say "Proxies permitidos: $PROXY_IPS (TCP/$PROXY_TCP_PORT)"
     say "DNS de bootstrap: $([ "$ALLOW_DNS" = "1" ] && echo LIBERADO || echo BLOQUEADO)"
 
     if [ "$ACTIVE" = "1" ]; then
@@ -255,6 +281,7 @@ firewall_detect() {
     say "======================================"
     say " DETECÇÃO FASTMOB"
     say "======================================"
+    say "Versão: $ENGINE_VERSION"
 
     if [ -n "$DETECTED" ]; then
         HOTSPOT_IF="$DETECTED"
@@ -292,6 +319,8 @@ ENGINE_SCRIPT
 cat > "$TMP_CONFIG" <<'CONFIG_FILE'
 HOTSPOT_IF=
 SERVER_IPS="144.22.139.151 163.176.118.248"
+PROXY_IPS="104.26.5.32 104.17.70.206 104.17.72.206"
+PROXY_TCP_PORT=80
 ALLOW_DNS=1
 CONFIG_FILE
 
@@ -332,6 +361,7 @@ say ""
 say "======================================"
 say " INSTALAÇÃO CONCLUÍDA"
 say "======================================"
+say "Versão instalada: $INSTALLER_VERSION"
 say "Comandos instalados:"
 say "  fastmob-on"
 say "  fastmob-off"
@@ -344,3 +374,8 @@ say "  2. Execute fastmob-on"
 say "  3. Para liberar novamente, execute fastmob-off"
 say ""
 say "Caso o shell ainda não encontre os comandos, feche e abra o Termux."
+say ""
+say "Proxies incluídos nesta versão (somente TCP/80):"
+say "  104.26.5.32"
+say "  104.17.70.206"
+say "  104.17.72.206"
